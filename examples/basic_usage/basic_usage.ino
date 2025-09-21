@@ -181,6 +181,9 @@ void setup() {
     otaUpdater.onStatusUpdate(onOtaStatus);
     otaUpdater.onError(onOtaError);
     
+    // Set MQTT credentials if required by your broker
+    otaUpdater.setMqttCredentials(mqtt_user, mqtt_password);
+    
     // Initialize OTA updater
     if (otaUpdater.begin()) {
         Serial.println("OTA updater initialized successfully");

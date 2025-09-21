@@ -43,6 +43,8 @@ private:
     // Configuration
     String updateTopic;
     OtaConfig config;
+    String mqttUser;
+    String mqttPassword;
     
     // SSL/TLS configuration
     String caCert;
@@ -94,6 +96,9 @@ public:
     void setDownloadTimeout(unsigned long timeoutMs);
     void setMaxRetries(int retries);
     void setCurrentVersion(const String& version);
+    
+    // MQTT configuration methods
+    void setMqttCredentials(const String& user, const String& password);
     
     // SSL/TLS configuration methods
     void setCACert(const char* caCert);

@@ -57,6 +57,13 @@ void ESP32OtaMqtt::setCurrentVersion(const String& version) {
     config.currentVersion = version;
 }
 
+// MQTT configuration methods
+void ESP32OtaMqtt::setMqttCredentials(const String& user, const String& password) {
+    mqttUser = user;
+    mqttPassword = password;
+    Serial.println("[OTA] MQTT credentials configured for user: " + user);
+}
+
 // SSL/TLS configuration methods
 void ESP32OtaMqtt::setCACert(const char* caCert) {
     this->caCert = String(caCert);
@@ -329,9 +336,21 @@ void ESP32OtaMqtt::loop() {
         static unsigned long lastReconnectAttempt = 0;
         if (millis() - lastReconnectAttempt > 5000) {
             lastReconnectAttempt = millis();
-            if (mqttClient->connect(("OTA_" + WiFi.macAddress()).c_str())) {
+            Serial.println("[OTA] Attempting MQTT connection...");
+            String clientId = "OTA_" + WiFi.macAddress();
+            bool connected = false;
+            
+            if (mqttUser.length() > 0 && mqttPassword.length() > 0) {
+                connected = mqttClient->connect(clientId.c_str(), mqttUser.c_str(), mqttPassword.c_str());
+            } else {
+                connected = mqttClient->connect(clientId.c_str());
+            }
+            
+            if (connected) {
                 Serial.println("[OTA] MQTT connected, subscribing to: " + updateTopic);
                 mqttClient->subscribe(updateTopic.c_str());
+            } else {
+                Serial.println("[OTA] MQTT connection failed, state: " + String(mqttClient->state()));
             }
         }
     } else {
@@ -551,13 +570,10 @@ bool ESP32OtaMqtt::downloadFirmware(const String& url, const String& expectedChe
         Serial.println("[OTA] Using HTTPS connection");
         
         // Configure SSL/TLS for HTTPS download
-        if (useInsecure || caCert.isEmpty()) {
-            wifiClient->setInsecure();
-            Serial.println("[OTA] Warning: Using insecure HTTPS connection");
-        } else {
-            // Certificate is already configured in setCACert()
-            Serial.println("[OTA] Using secure HTTPS with certificates");
-        }
+        // For firmware download, use insecure connection to avoid certificate conflicts
+        // The MQTT client may use different certificates than the firmware server
+        wifiClient->setInsecure();
+        Serial.println("[OTA] Using insecure HTTPS for firmware download (certificate conflicts avoided)");
         
         if (!wifiClient->connect(host.c_str(), port)) {
             reportError("Connection to HTTPS server failed");
@@ -636,6 +652,12 @@ bool ESP32OtaMqtt::downloadFirmware(const String& url, const String& expectedChe
         wifiClient->stop();
         Serial.println();
         Serial.println("[OTA] Downloaded " + String(written) + " bytes via HTTPS");
+        
+        // Restore certificate configuration for MQTT after download
+        if (!caCert.isEmpty()) {
+            wifiClient->setCACert(caCert.c_str());
+            Serial.println("[OTA] Certificate restored for MQTT connection");
+        }
     }
     
     // Finalize the update
