@@ -62,8 +62,8 @@ void ESP32OtaMqtt::setCACert(const char* caCert) {
     this->caCert = String(caCert);
     useInsecure = false;
     
-    // Apply CA certificate to WiFiClientSecure
-    wifiClient->setCACert(caCert);
+    // Apply CA certificate to WiFiClientSecure using stored string
+    wifiClient->setCACert(this->caCert.c_str());
     Serial.println("[OTA] CA certificate configured for secure MQTT connection");
 }
 
@@ -94,6 +94,22 @@ void ESP32OtaMqtt::setCACertFromFile(const String& caCertPath) {
     
     if (cert.length() == 0) {
         reportError("CA certificate file is empty: " + caCertPath);
+        return;
+    }
+    
+    // Debug: Print certificate info
+    Serial.println("[OTA] Certificate file size: " + String(cert.length()) + " bytes");
+    Serial.println("[OTA] Certificate starts with: " + cert.substring(0, min(50, (int)cert.length())));
+    Serial.println("[OTA] Certificate ends with: " + cert.substring(max(0, (int)cert.length()-50)));
+    
+    // Validate certificate format
+    if (!cert.startsWith("-----BEGIN CERTIFICATE-----")) {
+        reportError("Invalid certificate format - missing BEGIN CERTIFICATE header");
+        return;
+    }
+    
+    if (!cert.endsWith("-----END CERTIFICATE-----") && !cert.endsWith("-----END CERTIFICATE-----\n")) {
+        reportError("Invalid certificate format - missing END CERTIFICATE footer");
         return;
     }
     
