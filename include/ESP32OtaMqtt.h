@@ -7,6 +7,7 @@
 #include <Update.h>
 #include <PubSubClient.h>
 #include <SPIFFS.h>
+#include <mbedtls/sha256.h>
 
 // Callback function types
 typedef void (*OtaStatusCallback)(const String& status, int progress);
@@ -59,6 +60,7 @@ private:
     String pendingUrl;
     String pendingChecksum;
     int retryCount;
+    String calculatedChecksum;
     
     // Callbacks
     OtaStatusCallback statusCallback;
