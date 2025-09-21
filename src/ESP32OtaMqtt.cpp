@@ -429,11 +429,7 @@ bool ESP32OtaMqtt::downloadFirmware(const String& url, const String& expectedChe
     // Initialize SHA256 context for checksum calculation
     mbedtls_sha256_context sha256_ctx;
     mbedtls_sha256_init(&sha256_ctx);
-    if (mbedtls_sha256_starts(&sha256_ctx, 0) != 0) { // 0 = SHA256 (not SHA224)
-        reportError("Failed to initialize SHA256 context");
-        Update.abort();
-        return false;
-    }
+    mbedtls_sha256_starts(&sha256_ctx, 0); // 0 = SHA256 (not SHA224)
     
     // Check if URL is HTTP or HTTPS
     bool isHTTPS = url.startsWith("https://");
