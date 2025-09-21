@@ -1,0 +1,36 @@
+{
+  "name": "ESP32-OTA-MQTT",
+  "version": "1.0.0",
+  "description": "Non-blocking OTA firmware update library for ESP32 via MQTT with automatic rollback support",
+  "keywords": "ota, mqtt, esp32, firmware, update, non-blocking, rollback, https",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/username/esp32-ota-mqtt.git"
+  },
+  "authors": [
+    {
+      "name": "Marco Abbattista",
+      "email": "marco@example.com",
+      "maintainer": true
+    }
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/username/esp32-ota-mqtt",
+  "dependencies": {
+    "knolleary/PubSubClient": "^2.8"
+  },
+  "frameworks": ["arduino", "espidf"],
+  "platforms": ["espressif32"],
+  "build": {
+    "flags": [
+      "-Wno-unused-variable",
+      "-Wno-return-type",
+      "-Wno-missing-field-initializers",
+      "-Wno-sign-compare"
+    ],
+    "libCompatMode": 2
+  },
+  "export": {
+    "include": "include"
+  }
+}
