@@ -1,5 +1,4 @@
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
 #include <SPIFFS.h>
 #include <ESP32OtaMqtt.h>
 
@@ -23,9 +22,8 @@ const String ca_cert_path = "/certs/ca.crt";
 const String client_cert_path = "/certs/client.crt";
 const String client_key_path = "/certs/client.key";
 
-// Create WiFi client and OTA updater
-WiFiClientSecure wifiSecureClient;
-ESP32OtaMqtt otaUpdater(wifiSecureClient, update_topic);
+// Create OTA updater (PsychicMqttClient handles TLS internally)
+ESP32OtaMqtt otaUpdater(update_topic);
 
 void onOtaStatus(const String& status, int progress) {
     Serial.println("[OTA] Status: " + status + " (" + String(progress) + "%)");

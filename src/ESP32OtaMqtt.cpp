@@ -1,33 +1,46 @@
 #include "ESP32OtaMqtt.h"
 
-// Constructor with existing WiFi only
-ESP32OtaMqtt::ESP32OtaMqtt(WiFiClientSecure& wifi, const String& topic) 
-    : wifiClient(&wifi), updateTopic(topic), ownsMqttClient(true),
+// Constructor - creates own MQTT client
+ESP32OtaMqtt::ESP32OtaMqtt(const String& topic)
+    : updateTopic(topic), ownsMqttClient(true),
       currentStatus(OtaStatus::IDLE), lastCheck(0), retryCount(0),
       statusCallback(nullptr), errorCallback(nullptr), useInsecure(false),
       mqttConnected(false), mqttPort(8883) {
-    
-    mqttClient = new AsyncMqttClient();
+
+    mqttClient = new PsychicMqttClient();
     setupMqttCallbacks();
 }
 
-// Constructor with existing WiFi and MQTT
-ESP32OtaMqtt::ESP32OtaMqtt(WiFiClientSecure& wifi, AsyncMqttClient& mqtt, const String& topic)
-    : wifiClient(&wifi), mqttClient(&mqtt), updateTopic(topic), ownsMqttClient(false),
+// Constructor - uses existing MQTT client
+ESP32OtaMqtt::ESP32OtaMqtt(PsychicMqttClient& mqtt, const String& topic)
+    : mqttClient(&mqtt), updateTopic(topic), ownsMqttClient(false),
       currentStatus(OtaStatus::IDLE), lastCheck(0), retryCount(0),
       statusCallback(nullptr), errorCallback(nullptr), useInsecure(false),
       mqttConnected(false), mqttPort(8883) {
-    
+
     setupMqttCallbacks();
 }
 
 // Setup MQTT callbacks
 void ESP32OtaMqtt::setupMqttCallbacks() {
-    mqttClient->onConnect([this](bool sessionPresent) { onMqttConnect(sessionPresent); });
-    mqttClient->onDisconnect([this](AsyncMqttClientDisconnectReason reason) { onMqttDisconnect(reason); });
-    mqttClient->onMessage([this](char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
-        onMqttMessage(topic, payload, properties, len, index, total);
+    Serial.println("[OTA] Setting up MQTT callbacks...");
+
+    mqttClient->onConnect([this](bool sessionPresent) {
+        Serial.println("[OTA] onConnect callback triggered (session: " + String(sessionPresent) + ")");
+        onMqttConnect();
     });
+
+    mqttClient->onDisconnect([this](bool sessionPresent) {
+        Serial.println("[OTA] onDisconnect callback triggered");
+        onMqttDisconnect();
+    });
+
+    mqttClient->onMessage([this](const char* topic, const char* payload, size_t len, size_t index, size_t total) {
+        Serial.println("[OTA] onMessage callback triggered");
+        onMqttMessage(topic, payload, len, index, total);
+    });
+
+    Serial.println("[OTA] MQTT callbacks configured successfully");
 }
 
 // Destructor
@@ -78,10 +91,6 @@ void ESP32OtaMqtt::setMqttCredentials(const String& user, const String& password
 void ESP32OtaMqtt::setMqttServer(const String& server, uint16_t port) {
     mqttServer = server;
     mqttPort = port;
-    if (mqttClient) {
-        // Note: TLS is handled by WiFiClientSecure, not AsyncMqttClient
-        mqttClient->setServer(server.c_str(), port);
-    }
     Serial.println("[OTA] MQTT server configured: " + server + ":" + String(port));
 }
 
@@ -89,19 +98,28 @@ void ESP32OtaMqtt::setMqttServer(const String& server, uint16_t port) {
 void ESP32OtaMqtt::setCACert(const char* caCert) {
     this->caCert = String(caCert);
     useInsecure = false;
-    
-    // Apply CA certificate to WiFiClientSecure using stored string
-    wifiClient->setCACert(this->caCert.c_str());
+
+    Serial.println("[OTA] Configuring CA certificate...");
+    Serial.println("[OTA] Certificate length: " + String(strlen(caCert)));
+
+    // Apply CA certificate to PsychicMqttClient
+    if (mqttClient) {
+        mqttClient->setCACert(caCert);
+        Serial.println("[OTA] CA certificate applied to PsychicMqttClient");
+    } else {
+        Serial.println("[OTA] ERROR: mqttClient is NULL, cannot set CA certificate");
+    }
     Serial.println("[OTA] CA certificate configured for secure MQTT connection");
 }
 
 void ESP32OtaMqtt::setClientCert(const char* clientCert, const char* clientKey) {
     this->clientCert = String(clientCert);
     this->clientKey = String(clientKey);
-    
-    // Apply client certificate and key
-    wifiClient->setCertificate(clientCert);
-    wifiClient->setPrivateKey(clientKey);
+
+    // Apply client certificate and key to PsychicMqttClient
+    if (mqttClient) {
+        mqttClient->setClientCertificate(clientCert, clientKey);
+    }
     Serial.println("[OTA] Client certificate and key configured");
 }
 
@@ -182,9 +200,8 @@ void ESP32OtaMqtt::setClientCertFromFiles(const String& clientCertPath, const St
 
 void ESP32OtaMqtt::setInsecure(bool insecure) {
     useInsecure = insecure;
-    
+
     if (insecure) {
-        wifiClient->setInsecure();
         Serial.println("[OTA] WARNING: Using insecure connection (certificates not verified)");
     } else {
         Serial.println("[OTA] Secure connection enabled");
@@ -254,22 +271,29 @@ int ESP32OtaMqtt::compareVersions(const String& v1, const String& v2) {
 }
 
 // MQTT connect callback
-void ESP32OtaMqtt::onMqttConnect(bool sessionPresent) {
-    Serial.println("[OTA] MQTT connected, subscribing to: " + updateTopic);
+void ESP32OtaMqtt::onMqttConnect() {
+    Serial.println("[OTA] =============================");
+    Serial.println("[OTA] MQTT CONNECTION SUCCESSFUL!");
+    Serial.println("[OTA] =============================");
+    Serial.println("[OTA] Subscribing to topic: " + updateTopic);
+
     mqttConnected = true;
-    
-    uint16_t packetIdSub = mqttClient->subscribe(updateTopic.c_str(), 1);
-    Serial.println("[OTA] Subscribing at QoS 1, packetId: " + String(packetIdSub));
+
+    mqttClient->subscribe(updateTopic.c_str(), 1);
+    Serial.println("[OTA] Successfully subscribed to topic at QoS 1");
+    Serial.println("[OTA] Ready to receive OTA update messages");
 }
 
 // MQTT disconnect callback
-void ESP32OtaMqtt::onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
-    Serial.println("[OTA] MQTT disconnected. Reason: " + String((int)reason));
+void ESP32OtaMqtt::onMqttDisconnect() {
+    Serial.println("[OTA] =============================");
+    Serial.println("[OTA] MQTT DISCONNECTED!");
+    Serial.println("[OTA] =============================");
     mqttConnected = false;
 }
 
 // MQTT message handler
-void ESP32OtaMqtt::onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, 
+void ESP32OtaMqtt::onMqttMessage(const char* topic, const char* payload,
                                   size_t len, size_t index, size_t total) {
     if (String(topic) != updateTopic) return;
     
@@ -360,20 +384,37 @@ bool ESP32OtaMqtt::begin() {
         return false;
     }
     
-    // TLS is configured in setMqttServer() when using secure ports
+    // Build MQTT URI based on port (PsychicMqttClient uses URIs)
+    String protocol = (mqttPort == 8883 || mqttPort == 8884) ? "mqtts://" : "mqtt://";
+    String uri = protocol + mqttServer + ":" + String(mqttPort);
+
+    Serial.println("[OTA] === MQTT Connection Configuration ===");
+    Serial.println("[OTA] Protocol: " + protocol);
+    Serial.println("[OTA] Server: " + mqttServer);
+    Serial.println("[OTA] Port: " + String(mqttPort));
+    Serial.println("[OTA] Full URI: " + uri);
+    Serial.println("[OTA] Username: " + (mqttUser.isEmpty() ? String("None") : mqttUser));
+    Serial.println("[OTA] Password: " + (mqttPassword.isEmpty() ? String("None") : String("***")));
+    Serial.println("[OTA] CA Cert configured: " + String(!caCert.isEmpty() ? "Yes" : "No"));
+    Serial.println("[OTA] Insecure mode: " + String(useInsecure ? "Yes" : "No"));
+
     if (mqttPort == 8883 || mqttPort == 8884) {
         if (!useInsecure && !caCert.isEmpty()) {
-            Serial.println("[OTA] AsyncMqttClient using secure TLS connection with CA certificate");
+            Serial.println("[OTA] TLS Mode: Secure with CA certificate validation");
         } else if (useInsecure) {
-            Serial.println("[OTA] AsyncMqttClient using insecure TLS connection");
+            Serial.println("[OTA] TLS Mode: Insecure (no certificate validation)");
         } else {
-            Serial.println("[OTA] AsyncMqttClient using TLS connection");
+            Serial.println("[OTA] TLS Mode: Default (may fail without certificate)");
         }
     }
-    
+
     // Connect to MQTT (non-blocking)
-    Serial.println("[OTA] Connecting to MQTT broker: " + mqttServer + ":" + String(mqttPort));
+    Serial.println("[OTA] Setting MQTT server URI...");
+    mqttClient->setServer(uri.c_str());
+
+    Serial.println("[OTA] Initiating MQTT connection...");
     mqttClient->connect();
+    Serial.println("[OTA] MQTT connect() called, waiting for callback...");
     
     Serial.println("[OTA] ESP32 OTA MQTT updater initialized");
     Serial.println("[OTA] Current version: " + config.currentVersion);
@@ -392,13 +433,16 @@ void ESP32OtaMqtt::loop() {
         return;
     }
     
-    // Auto-reconnect MQTT if disconnected (handled by AsyncMqttClient)
+    // Auto-reconnect MQTT if disconnected
     if (!mqttConnected && mqttServer.length() > 0) {
         static unsigned long lastReconnectAttempt = 0;
         if (millis() - lastReconnectAttempt > 5000) {
             lastReconnectAttempt = millis();
-            Serial.println("[OTA] Reconnecting to MQTT...");
+            Serial.println("[OTA] MQTT not connected, attempting reconnection...");
+            Serial.println("[OTA] MQTT client status: " + String(mqttClient->connected() ? "connected" : "disconnected"));
+            Serial.println("[OTA] Time since last attempt: " + String(millis() - lastReconnectAttempt) + "ms");
             mqttClient->connect();
+            Serial.println("[OTA] Reconnect attempt initiated");
         }
     }
     

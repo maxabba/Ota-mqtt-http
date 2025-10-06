@@ -1,9 +1,7 @@
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <AsyncMqttClient.h>
 #include <ESP32OtaMqtt.h>
 #include <SPIFFS.h>
-// Note: AsyncMqttClient depends on AsyncTCP which is automatically included
+// Note: PsychicMqttClient is automatically included with ESP32OtaMqtt
 
 // ====================
 // CONFIGURATION SECTION
@@ -58,12 +56,8 @@ const String ca_cert_path = "/certs/ca.crt";
 const String update_topic = "device/esp32_001/ota";
 const String current_version = "1.0.0";
 
-// Create WiFi client and MQTT client
-WiFiClientSecure wifiSecureClient;
-AsyncMqttClient mqttClient;
-
-// Create OTA updater (using existing MQTT client)
-ESP32OtaMqtt otaUpdater(wifiSecureClient, mqttClient, update_topic);
+// Create OTA updater (PsychicMqttClient handles TLS internally)
+ESP32OtaMqtt otaUpdater(update_topic);
 
 // Callback functions for OTA status
 void onOtaStatus(const String& status, int progress) {

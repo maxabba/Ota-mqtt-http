@@ -1,5 +1,4 @@
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
 #include <ESP32OtaMqtt.h>
 
 // WiFi credentials
@@ -17,11 +16,8 @@ const String device_id = "esp32_advanced_001";
 const String update_topic = "devices/" + device_id + "/ota";
 const String current_version = "2.1.0";
 
-// Create only WiFi client (OTA will create its own MQTT client)
-WiFiClientSecure wifiSecureClient;
-
-// Create OTA updater (will create its own MQTT client internally)
-ESP32OtaMqtt otaUpdater(wifiSecureClient, update_topic);
+// Create OTA updater (PsychicMqttClient handles TLS internally)
+ESP32OtaMqtt otaUpdater(update_topic);
 
 // Status tracking
 bool updateInProgress = false;

@@ -1,5 +1,4 @@
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
 #include <ESP32OtaMqtt.h>
 
 // WiFi credentials
@@ -52,9 +51,8 @@ const char* client_key = \
 "Your client private key here...\n" \
 "-----END PRIVATE KEY-----\n";
 
-// Create WiFi client and OTA updater
-WiFiClientSecure wifiSecureClient;
-ESP32OtaMqtt otaUpdater(wifiSecureClient, update_topic);
+// Create OTA updater (PsychicMqttClient handles TLS internally)
+ESP32OtaMqtt otaUpdater(update_topic);
 
 void onOtaStatus(const String& status, int progress) {
     Serial.println("[OTA] Status: " + status + " (" + String(progress) + "%)");

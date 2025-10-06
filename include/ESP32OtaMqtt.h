@@ -5,7 +5,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <Update.h>
-#include <AsyncMqttClient.h>
+#include <PsychicMqttClient.h>
 #include <SPIFFS.h>
 #include <mbedtls/sha256.h>
 
@@ -37,8 +37,7 @@ struct OtaConfig {
 class ESP32OtaMqtt {
 private:
     // Core components
-    WiFiClientSecure* wifiClient;
-    AsyncMqttClient* mqttClient;
+    PsychicMqttClient* mqttClient;
     bool ownsMqttClient;
     
     // Configuration
@@ -68,9 +67,9 @@ private:
     
     // Internal methods
     void setupMqttCallbacks();
-    void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total);
-    void onMqttConnect(bool sessionPresent);
-    void onMqttDisconnect(AsyncMqttClientDisconnectReason reason);
+    void onMqttMessage(const char* topic, const char* payload, size_t len, size_t index, size_t total);
+    void onMqttConnect();
+    void onMqttDisconnect();
     bool parseUpdateMessage(const String& message);
     String extractJsonValue(const String& json, const String& key);
     bool isNewerVersion(const String& newVersion, const String& currentVersion);
@@ -89,8 +88,8 @@ private:
     
 public:
     // Constructors
-    ESP32OtaMqtt(WiFiClientSecure& wifi, const String& topic);
-    ESP32OtaMqtt(WiFiClientSecure& wifi, AsyncMqttClient& mqtt, const String& topic);
+    ESP32OtaMqtt(const String& topic);
+    ESP32OtaMqtt(PsychicMqttClient& mqtt, const String& topic);
     
     // Destructor
     ~ESP32OtaMqtt();
