@@ -20,11 +20,11 @@ A high-performance, non-blocking OTA (Over-The-Air) firmware update library for 
 ```cpp
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <PubSubClient.h>
+#include <AsyncMqttClient.h>
 #include <ESP32OtaMqtt.h>
 
 WiFiClientSecure wifiClient;
-PubSubClient mqttClient(wifiClient);
+AsyncMqttClient mqttClient;
 ESP32OtaMqtt otaUpdater(wifiClient, mqttClient, "device/my_esp32/ota");
 
 void setup() {
@@ -52,9 +52,9 @@ void loop() {
 - **Platform**: ESP32 only
 - **Framework**: Arduino/ESP-IDF
 - **Dependencies**:
-  - `knolleary/PubSubClient` ^2.8
-  - `bblanchon/ArduinoJson` ^6.0.0
+  - `me-no-dev/AsyncMqttClient` ^0.9.0 (non-blocking MQTT client)
   - Built-in ESP32 libraries (WiFi, Update, esp_ota_ops)
+  - AsyncTCP (automatically included with AsyncMqttClient)
 
 ## 📦 Installation
 

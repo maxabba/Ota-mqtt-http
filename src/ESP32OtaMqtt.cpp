@@ -1,34 +1,42 @@
 #include "ESP32OtaMqtt.h"
 
-// Static instance for callback
-ESP32OtaMqtt* ESP32OtaMqtt::instance = nullptr;
-
 // Constructor with existing WiFi only
 ESP32OtaMqtt::ESP32OtaMqtt(WiFiClientSecure& wifi, const String& topic) 
     : wifiClient(&wifi), updateTopic(topic), ownsMqttClient(true),
       currentStatus(OtaStatus::IDLE), lastCheck(0), retryCount(0),
-      statusCallback(nullptr), errorCallback(nullptr), useInsecure(false) {
+      statusCallback(nullptr), errorCallback(nullptr), useInsecure(false),
+      mqttConnected(false), mqttPort(8883) {
     
-    mqttClient = new PubSubClient(*wifiClient);
-    instance = this;
+    mqttClient = new AsyncMqttClient();
+    setupMqttCallbacks();
 }
 
 // Constructor with existing WiFi and MQTT
-ESP32OtaMqtt::ESP32OtaMqtt(WiFiClientSecure& wifi, PubSubClient& mqtt, const String& topic)
+ESP32OtaMqtt::ESP32OtaMqtt(WiFiClientSecure& wifi, AsyncMqttClient& mqtt, const String& topic)
     : wifiClient(&wifi), mqttClient(&mqtt), updateTopic(topic), ownsMqttClient(false),
       currentStatus(OtaStatus::IDLE), lastCheck(0), retryCount(0),
-      statusCallback(nullptr), errorCallback(nullptr), useInsecure(false) {
+      statusCallback(nullptr), errorCallback(nullptr), useInsecure(false),
+      mqttConnected(false), mqttPort(8883) {
     
-    instance = this;
+    setupMqttCallbacks();
+}
+
+// Setup MQTT callbacks
+void ESP32OtaMqtt::setupMqttCallbacks() {
+    mqttClient->onConnect([this](bool sessionPresent) { onMqttConnect(sessionPresent); });
+    mqttClient->onDisconnect([this](AsyncMqttClientDisconnectReason reason) { onMqttDisconnect(reason); });
+    mqttClient->onMessage([this](char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
+        onMqttMessage(topic, payload, properties, len, index, total);
+    });
 }
 
 // Destructor
 ESP32OtaMqtt::~ESP32OtaMqtt() {
+    if (mqttClient) {
+        mqttClient->disconnect();
+    }
     if (ownsMqttClient && mqttClient) {
         delete mqttClient;
-    }
-    if (instance == this) {
-        instance = nullptr;
     }
 }
 
@@ -61,7 +69,23 @@ void ESP32OtaMqtt::setCurrentVersion(const String& version) {
 void ESP32OtaMqtt::setMqttCredentials(const String& user, const String& password) {
     mqttUser = user;
     mqttPassword = password;
+    if (mqttClient) {
+        mqttClient->setCredentials(user.c_str(), password.c_str());
+    }
     Serial.println("[OTA] MQTT credentials configured for user: " + user);
+}
+
+void ESP32OtaMqtt::setMqttServer(const String& server, uint16_t port) {
+    mqttServer = server;
+    mqttPort = port;
+    if (mqttClient) {
+        // Configure TLS first if using secure port
+        if (port == 8883 || port == 8884) {
+            mqttClient->setSecure(true);
+        }
+        mqttClient->setServer(server.c_str(), port);
+    }
+    Serial.println("[OTA] MQTT server configured: " + server + ":" + String(port));
 }
 
 // SSL/TLS configuration methods
@@ -232,35 +256,53 @@ int ESP32OtaMqtt::compareVersions(const String& v1, const String& v2) {
     return 0;
 }
 
-// Static MQTT callback wrapper
-void ESP32OtaMqtt::staticMqttCallback(char* topic, byte* payload, unsigned int length) {
-    if (instance) {
-        instance->mqttCallback(topic, payload, length);
-    }
+// MQTT connect callback
+void ESP32OtaMqtt::onMqttConnect(bool sessionPresent) {
+    Serial.println("[OTA] MQTT connected, subscribing to: " + updateTopic);
+    mqttConnected = true;
+    
+    uint16_t packetIdSub = mqttClient->subscribe(updateTopic.c_str(), 1);
+    Serial.println("[OTA] Subscribing at QoS 1, packetId: " + String(packetIdSub));
+}
+
+// MQTT disconnect callback
+void ESP32OtaMqtt::onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
+    Serial.println("[OTA] MQTT disconnected. Reason: " + String((int)reason));
+    mqttConnected = false;
 }
 
 // MQTT message handler
-void ESP32OtaMqtt::mqttCallback(char* topic, byte* payload, unsigned int length) {
+void ESP32OtaMqtt::onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, 
+                                  size_t len, size_t index, size_t total) {
     if (String(topic) != updateTopic) return;
     
-    String message;
-    for (unsigned int i = 0; i < length; i++) {
-        message += (char)payload[i];
+    // Handle partial messages
+    static String messageBuffer;
+    if (index == 0) {
+        messageBuffer = "";
     }
     
-    Serial.println("[OTA] Received update message: " + message);
+    for (size_t i = 0; i < len; i++) {
+        messageBuffer += (char)payload[i];
+    }
     
-    if (parseUpdateMessage(message)) {
-        // Check if this is a newer version
-        if (isNewerVersion(pendingVersion, config.currentVersion)) {
-            Serial.println("[OTA] New version available: " + pendingVersion);
-            updateStatus(OtaStatus::DOWNLOADING);
-            
-            // Start download in next loop iteration to avoid blocking MQTT
-            // The actual download will be handled in loop()
-        } else {
-            Serial.println("[OTA] Version " + pendingVersion + " is not newer than current " + config.currentVersion);
+    // Process complete message
+    if (index + len == total) {
+        Serial.println("[OTA] Received update message: " + messageBuffer);
+        
+        if (parseUpdateMessage(messageBuffer)) {
+            // Check if this is a newer version
+            if (isNewerVersion(pendingVersion, config.currentVersion)) {
+                Serial.println("[OTA] New version available: " + pendingVersion);
+                updateStatus(OtaStatus::DOWNLOADING);
+                
+                // Start download in next loop iteration to avoid blocking
+            } else {
+                Serial.println("[OTA] Version " + pendingVersion + " is not newer than current " + config.currentVersion);
+            }
         }
+        
+        messageBuffer = "";
     }
 }
 
@@ -315,8 +357,26 @@ bool ESP32OtaMqtt::begin() {
         return false;
     }
     
-    // Set up MQTT callback
-    mqttClient->setCallback(staticMqttCallback);
+    // Verify MQTT server is configured
+    if (mqttServer.isEmpty()) {
+        reportError("MQTT server not configured. Call setMqttServer() first");
+        return false;
+    }
+    
+    // TLS is configured in setMqttServer() when using secure ports
+    if (mqttPort == 8883 || mqttPort == 8884) {
+        if (!useInsecure && !caCert.isEmpty()) {
+            Serial.println("[OTA] AsyncMqttClient using secure TLS connection with CA certificate");
+        } else if (useInsecure) {
+            Serial.println("[OTA] AsyncMqttClient using insecure TLS connection");
+        } else {
+            Serial.println("[OTA] AsyncMqttClient using TLS connection");
+        }
+    }
+    
+    // Connect to MQTT (non-blocking)
+    Serial.println("[OTA] Connecting to MQTT broker: " + mqttServer + ":" + String(mqttPort));
+    mqttClient->connect();
     
     Serial.println("[OTA] ESP32 OTA MQTT updater initialized");
     Serial.println("[OTA] Current version: " + config.currentVersion);
@@ -328,33 +388,21 @@ bool ESP32OtaMqtt::begin() {
 
 // Non-blocking main loop
 void ESP32OtaMqtt::loop() {
-    if (!WiFi.isConnected()) return;
+    if (!WiFi.isConnected()) {
+        if (mqttConnected) {
+            mqttClient->disconnect();
+        }
+        return;
+    }
     
-    // Handle MQTT connection
-    if (!mqttClient->connected()) {
-        // Try to reconnect (non-blocking)
+    // Auto-reconnect MQTT if disconnected (handled by AsyncMqttClient)
+    if (!mqttConnected && mqttServer.length() > 0) {
         static unsigned long lastReconnectAttempt = 0;
         if (millis() - lastReconnectAttempt > 5000) {
             lastReconnectAttempt = millis();
-            Serial.println("[OTA] Attempting MQTT connection...");
-            String clientId = "OTA_" + WiFi.macAddress();
-            bool connected = false;
-            
-            if (mqttUser.length() > 0 && mqttPassword.length() > 0) {
-                connected = mqttClient->connect(clientId.c_str(), mqttUser.c_str(), mqttPassword.c_str());
-            } else {
-                connected = mqttClient->connect(clientId.c_str());
-            }
-            
-            if (connected) {
-                Serial.println("[OTA] MQTT connected, subscribing to: " + updateTopic);
-                mqttClient->subscribe(updateTopic.c_str());
-            } else {
-                Serial.println("[OTA] MQTT connection failed, state: " + String(mqttClient->state()));
-            }
+            Serial.println("[OTA] Reconnecting to MQTT...");
+            mqttClient->connect();
         }
-    } else {
-        mqttClient->loop();
     }
     
     // Periodic update check

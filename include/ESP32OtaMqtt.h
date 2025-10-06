@@ -5,7 +5,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <Update.h>
-#include <PubSubClient.h>
+#include <AsyncMqttClient.h>
 #include <SPIFFS.h>
 #include <mbedtls/sha256.h>
 
@@ -38,7 +38,7 @@ class ESP32OtaMqtt {
 private:
     // Core components
     WiFiClientSecure* wifiClient;
-    PubSubClient* mqttClient;
+    AsyncMqttClient* mqttClient;
     bool ownsMqttClient;
     
     // Configuration
@@ -67,8 +67,10 @@ private:
     OtaErrorCallback errorCallback;
     
     // Internal methods
-    void mqttCallback(char* topic, byte* payload, unsigned int length);
-    static void staticMqttCallback(char* topic, byte* payload, unsigned int length);
+    void setupMqttCallbacks();
+    void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total);
+    void onMqttConnect(bool sessionPresent);
+    void onMqttDisconnect(AsyncMqttClientDisconnectReason reason);
     bool parseUpdateMessage(const String& message);
     String extractJsonValue(const String& json, const String& key);
     bool isNewerVersion(const String& newVersion, const String& currentVersion);
@@ -80,13 +82,15 @@ private:
     void updateStatus(OtaStatus status, int progress = 0);
     void reportError(const String& error, int errorCode = 0);
     
-    // Static instance for callback
-    static ESP32OtaMqtt* instance;
+    // MQTT connection state
+    bool mqttConnected;
+    String mqttServer;
+    uint16_t mqttPort;
     
 public:
     // Constructors
     ESP32OtaMqtt(WiFiClientSecure& wifi, const String& topic);
-    ESP32OtaMqtt(WiFiClientSecure& wifi, PubSubClient& mqtt, const String& topic);
+    ESP32OtaMqtt(WiFiClientSecure& wifi, AsyncMqttClient& mqtt, const String& topic);
     
     // Destructor
     ~ESP32OtaMqtt();
@@ -101,6 +105,7 @@ public:
     
     // MQTT configuration methods
     void setMqttCredentials(const String& user, const String& password);
+    void setMqttServer(const String& server, uint16_t port);
     
     // SSL/TLS configuration methods
     void setCACert(const char* caCert);

@@ -1,8 +1,9 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <PubSubClient.h>
+#include <AsyncMqttClient.h>
 #include <ESP32OtaMqtt.h>
 #include <SPIFFS.h>
+// Note: AsyncMqttClient depends on AsyncTCP which is automatically included
 
 // ====================
 // CONFIGURATION SECTION
@@ -59,7 +60,7 @@ const String current_version = "1.0.0";
 
 // Create WiFi client and MQTT client
 WiFiClientSecure wifiSecureClient;
-PubSubClient mqttClient(wifiSecureClient);
+AsyncMqttClient mqttClient;
 
 // Create OTA updater (using existing MQTT client)
 ESP32OtaMqtt otaUpdater(wifiSecureClient, mqttClient, update_topic);
@@ -85,10 +86,20 @@ void onOtaError(const String& error, int errorCode) {
     // The library will automatically retry based on configuration
 }
 
-// Regular MQTT callback for your application
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
+// MQTT callbacks for application
+void onMqttConnect(bool sessionPresent) {
+    Serial.println("[APP] Connected to MQTT");
+    // Subscribe to your application topics here
+}
+
+void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
+    Serial.println("[APP] Disconnected from MQTT");
+}
+
+void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, 
+                   size_t len, size_t index, size_t total) {
     String message;
-    for (unsigned int i = 0; i < length; i++) {
+    for (size_t i = 0; i < len; i++) {
         message += (char)payload[i];
     }
     
@@ -164,9 +175,12 @@ void setup() {
     // Optional: For testing only - use insecure connection
     // otaUpdater.setInsecure(true);  // WARNING: Not secure!
     
-    // Configure MQTT
+    // Configure MQTT client callbacks
+    mqttClient.onConnect(onMqttConnect);
+    mqttClient.onDisconnect(onMqttDisconnect);
+    mqttClient.onMessage(onMqttMessage);
     mqttClient.setServer(mqtt_server, mqtt_port);
-    mqttClient.setCallback(mqttCallback);
+    mqttClient.setCredentials(mqtt_user, mqtt_password);
     
     // Configure OTA updater
     OtaConfig config;
@@ -181,7 +195,8 @@ void setup() {
     otaUpdater.onStatusUpdate(onOtaStatus);
     otaUpdater.onError(onOtaError);
     
-    // Set MQTT credentials if required by your broker
+    // Set MQTT credentials and server
+    otaUpdater.setMqttServer(mqtt_server, mqtt_port);
     otaUpdater.setMqttCredentials(mqtt_user, mqtt_password);
     
     // Initialize OTA updater
@@ -217,7 +232,7 @@ void loop() {
                              otaUpdater.getCurrentVersion() + 
                              "\",\"uptime\":" + String(millis()) + 
                              ",\"status\":\"" + otaUpdater.getStatusString() + "\"}";
-            mqttClient.publish("device/esp32_001/heartbeat", heartbeat.c_str());
+            mqttClient.publish("device/esp32_001/heartbeat", 0, false, heartbeat.c_str());
             Serial.println("[APP] Heartbeat sent");
         }
     }
