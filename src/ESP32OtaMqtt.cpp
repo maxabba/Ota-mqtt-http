@@ -79,10 +79,7 @@ void ESP32OtaMqtt::setMqttServer(const String& server, uint16_t port) {
     mqttServer = server;
     mqttPort = port;
     if (mqttClient) {
-        // Configure TLS first if using secure port
-        if (port == 8883 || port == 8884) {
-            mqttClient->setSecure(true);
-        }
+        // Note: TLS is handled by WiFiClientSecure, not AsyncMqttClient
         mqttClient->setServer(server.c_str(), port);
     }
     Serial.println("[OTA] MQTT server configured: " + server + ":" + String(port));
