@@ -9,6 +9,18 @@
 #include <SPIFFS.h>
 #include <mbedtls/sha256.h>
 
+// Optional: disable logging to save ~7KB Flash
+// Uncomment the following line to disable all OTA debug logs:
+// #define OTA_DISABLE_LOGGING
+
+#ifdef OTA_DISABLE_LOGGING
+  #define OTA_LOG(msg)
+  #define OTA_LOG_F(fmt, ...)
+#else
+  #define OTA_LOG(msg) Serial.println(String("[OTA] ") + msg)
+  #define OTA_LOG_F(fmt, ...) Serial.printf("[OTA] " fmt "\n", ##__VA_ARGS__)
+#endif
+
 // Callback function types
 typedef void (*OtaStatusCallback)(const String& status, int progress);
 typedef void (*OtaErrorCallback)(const String& error, int errorCode);

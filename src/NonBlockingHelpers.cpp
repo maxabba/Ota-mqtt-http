@@ -30,7 +30,7 @@ void ESP32OtaMqtt::handleMqttConnection() {
                 lastMqttAttempt = now;
                 mqttConnectStartTime = now;
                 mqttState = MqttConnState::CONNECTING;
-                Serial.println("[OTA] Initiating MQTT connection...");
+                OTA_LOG("Initiating MQTT connection...");
             }
             break;
 
@@ -39,14 +39,14 @@ void ESP32OtaMqtt::handleMqttConnection() {
             if (now - mqttConnectStartTime < config.mqttConnectTimeout) {
                 if (attemptMqttConnect()) {
                     mqttState = MqttConnState::CONNECTED;
-                    Serial.println("[OTA] MQTT connected successfully");
+                    OTA_LOG("MQTT connected successfully");
                 } else {
                     // Connection failed, but don't immediately retry
                     mqttState = MqttConnState::FAILED;
                 }
             } else {
                 // Timeout reached
-                Serial.println("[OTA] MQTT connection timeout");
+                OTA_LOG("MQTT connection timeout");
                 mqttState = MqttConnState::FAILED;
             }
             break;
@@ -54,7 +54,7 @@ void ESP32OtaMqtt::handleMqttConnection() {
         case MqttConnState::CONNECTED:
             // Connection active, just maintain it
             if (!mqttClient->connected()) {
-                Serial.println("[OTA] MQTT connection lost");
+                OTA_LOG("MQTT connection lost");
                 mqttState = MqttConnState::DISCONNECTED;
             } else {
                 // Process MQTT messages (non-blocking)
@@ -86,11 +86,11 @@ bool ESP32OtaMqtt::attemptMqttConnect() {
     }
 
     if (connected) {
-        Serial.println("[OTA] MQTT connected, subscribing to: " + updateTopic);
+        OTA_LOG("MQTT connected, subscribing to: " + updateTopic);
         mqttClient->subscribe(updateTopic.c_str());
         return true;
     } else {
-        Serial.println("[OTA] MQTT connection failed, state: " + String(mqttClient->state()));
+        OTA_LOG("MQTT connection failed, state: " + String(mqttClient->state()));
         return false;
     }
 }
@@ -125,10 +125,10 @@ void ESP32OtaMqtt::handleDownload() {
             // Finalize and verify
             if (finalizeDownload(pendingChecksum)) {
                 downloadState = DownloadState::COMPLETE;
-                Serial.println("[OTA] Download completed successfully");
+                OTA_LOG("Download completed successfully");
             } else {
                 downloadState = DownloadState::FAILED;
-                Serial.println("[OTA] Download verification failed");
+                OTA_LOG("Download verification failed");
             }
             break;
 
@@ -155,7 +155,7 @@ void ESP32OtaMqtt::handleDownload() {
                 updateStatus(OtaStatus::ERROR);
                 retryCount = 0;
             } else {
-                Serial.println("[OTA] Retry " + String(retryCount) + "/" + String(config.maxRetries));
+                OTA_LOG("Retry " + String(retryCount) + "/" + String(config.maxRetries));
                 // Reset for retry
                 cleanupDownload();
                 downloadState = DownloadState::IDLE;
@@ -169,7 +169,7 @@ void ESP32OtaMqtt::handleDownload() {
 }
 
 bool ESP32OtaMqtt::startDownload(const String& url) {
-    Serial.println("[OTA] Starting non-blocking download from: " + url);
+    OTA_LOG("Starting non-blocking download from: " + url);
 
     // Prepare for OTA
     if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
@@ -223,9 +223,9 @@ bool ESP32OtaMqtt::startDownload(const String& url) {
         }
     }
 
-    Serial.println("[OTA] Protocol: " + String(isHTTPS ? "HTTPS" : "HTTP"));
-    Serial.println("[OTA] Host: " + host + ":" + String(port));
-    Serial.println("[OTA] Path: " + path);
+    OTA_LOG("Protocol: " + String(isHTTPS ? "HTTPS" : "HTTP"));
+    OTA_LOG("Host: " + host + ":" + String(port));
+    OTA_LOG("Path: " + path);
 
     // Create download client
     if (isHTTP) {
@@ -237,7 +237,7 @@ bool ESP32OtaMqtt::startDownload(const String& url) {
     }
 
     // Connect to server (this may block briefly, but unavoidable with WiFiClient)
-    Serial.println("[OTA] Connecting to server...");
+    OTA_LOG("Connecting to server...");
     if (!downloadClient->connect(host.c_str(), port)) {
         reportError("Connection failed");
         cleanupDownload();
@@ -261,7 +261,7 @@ bool ESP32OtaMqtt::startDownload(const String& url) {
 
             if (line.startsWith("Content-Length:")) {
                 totalBytes = line.substring(15).toInt();
-                Serial.println("[OTA] Content-Length: " + String(totalBytes));
+                OTA_LOG("Content-Length: " + String(totalBytes));
             }
 
             if (line.length() == 0) {
@@ -274,7 +274,7 @@ bool ESP32OtaMqtt::startDownload(const String& url) {
     downloadedBytes = 0;
     downloadStartTime = millis();
     downloadState = DownloadState::DOWNLOADING;
-    Serial.println("[OTA] Starting chunked download...");
+    OTA_LOG("Starting chunked download...");
 
     return true;
 }
@@ -337,7 +337,7 @@ bool ESP32OtaMqtt::processDownloadChunk() {
 }
 
 bool ESP32OtaMqtt::finalizeDownload(const String& expectedChecksum) {
-    Serial.println("[OTA] Finalizing download: " + String(downloadedBytes) + " bytes");
+    OTA_LOG("Finalizing download: " + String(downloadedBytes) + " bytes");
 
     if (downloadedBytes == 0) {
         reportError("No data received");
@@ -357,7 +357,7 @@ bool ESP32OtaMqtt::finalizeDownload(const String& expectedChecksum) {
         calculatedChecksum += hex;
     }
 
-    Serial.println("[OTA] Calculated checksum: " + calculatedChecksum);
+    OTA_LOG("Calculated checksum: " + calculatedChecksum);
 
     // End update
     if (!Update.end(true)) {
@@ -374,7 +374,7 @@ bool ESP32OtaMqtt::finalizeDownload(const String& expectedChecksum) {
         return false;
     }
 
-    Serial.println("[OTA] Download verified successfully");
+    OTA_LOG("Download verified successfully");
     return true;
 }
 

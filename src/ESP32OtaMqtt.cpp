@@ -89,13 +89,13 @@ void ESP32OtaMqtt::setMqttServer(const char* server, int port) {
     mqttServer = String(server);
     mqttPort = port;
     mqttClient->setServer(server, port);
-    Serial.println("[OTA] MQTT server configured: " + mqttServer + ":" + String(mqttPort));
+    OTA_LOG("MQTT server configured: " + mqttServer + ":" + String(mqttPort));
 }
 
 void ESP32OtaMqtt::setMqttCredentials(const String& user, const String& password) {
     mqttUser = user;
     mqttPassword = password;
-    Serial.println("[OTA] MQTT credentials configured for user: " + user);
+    OTA_LOG("MQTT credentials configured for user: " + user);
 }
 
 // SSL/TLS configuration methods
@@ -105,7 +105,7 @@ void ESP32OtaMqtt::setCACert(const char* caCert) {
     
     // Apply CA certificate to WiFiClientSecure using stored string
     wifiClient->setCACert(this->caCert.c_str());
-    Serial.println("[OTA] CA certificate configured for secure MQTT connection");
+    OTA_LOG("CA certificate configured for secure MQTT connection");
 }
 
 void ESP32OtaMqtt::setClientCert(const char* clientCert, const char* clientKey) {
@@ -115,7 +115,7 @@ void ESP32OtaMqtt::setClientCert(const char* clientCert, const char* clientKey) 
     // Apply client certificate and key
     wifiClient->setCertificate(clientCert);
     wifiClient->setPrivateKey(clientKey);
-    Serial.println("[OTA] Client certificate and key configured");
+    OTA_LOG("Client certificate and key configured");
 }
 
 void ESP32OtaMqtt::setCACertFromFile(const String& caCertPath) {
@@ -139,9 +139,9 @@ void ESP32OtaMqtt::setCACertFromFile(const String& caCertPath) {
     }
     
     // Debug: Print certificate info
-    Serial.println("[OTA] Certificate file size: " + String(cert.length()) + " bytes");
-    Serial.println("[OTA] Certificate starts with: " + cert.substring(0, min(50, (int)cert.length())));
-    Serial.println("[OTA] Certificate ends with: " + cert.substring(max(0, (int)cert.length()-50)));
+    OTA_LOG("Certificate file size: " + String(cert.length()) + " bytes");
+    OTA_LOG("Certificate starts with: " + cert.substring(0, min(50, (int)cert.length())));
+    OTA_LOG("Certificate ends with: " + cert.substring(max(0, (int)cert.length()-50)));
     
     // Validate certificate format
     if (!cert.startsWith("-----BEGIN CERTIFICATE-----")) {
@@ -155,7 +155,7 @@ void ESP32OtaMqtt::setCACertFromFile(const String& caCertPath) {
     }
     
     setCACert(cert.c_str());
-    Serial.println("[OTA] CA certificate loaded from SPIFFS: " + caCertPath);
+    OTA_LOG("CA certificate loaded from SPIFFS: " + caCertPath);
 }
 
 void ESP32OtaMqtt::setClientCertFromFiles(const String& clientCertPath, const String& clientKeyPath) {
@@ -190,7 +190,7 @@ void ESP32OtaMqtt::setClientCertFromFiles(const String& clientCertPath, const St
     }
     
     setClientCert(cert.c_str(), key.c_str());
-    Serial.println("[OTA] Client certificate and key loaded from SPIFFS");
+    OTA_LOG("Client certificate and key loaded from SPIFFS");
 }
 
 void ESP32OtaMqtt::setInsecure(bool insecure) {
@@ -198,9 +198,9 @@ void ESP32OtaMqtt::setInsecure(bool insecure) {
     
     if (insecure) {
         wifiClient->setInsecure();
-        Serial.println("[OTA] WARNING: Using insecure connection (certificates not verified)");
+        OTA_LOG("WARNING: Using insecure connection (certificates not verified)");
     } else {
-        Serial.println("[OTA] Secure connection enabled");
+        OTA_LOG("Secure connection enabled");
     }
 }
 
@@ -282,18 +282,18 @@ void ESP32OtaMqtt::mqttCallback(char* topic, byte* payload, unsigned int length)
         message += (char)payload[i];
     }
     
-    Serial.println("[OTA] Received update message: " + message);
+    OTA_LOG("Received update message: " + message);
     
     if (parseUpdateMessage(message)) {
         // Check if this is a newer version
         if (isNewerVersion(pendingVersion, config.currentVersion)) {
-            Serial.println("[OTA] New version available: " + pendingVersion);
+            OTA_LOG("New version available: " + pendingVersion);
             updateStatus(OtaStatus::DOWNLOADING);
             
             // Start download in next loop iteration to avoid blocking MQTT
             // The actual download will be handled in loop()
         } else {
-            Serial.println("[OTA] Version " + pendingVersion + " is not newer than current " + config.currentVersion);
+            OTA_LOG("Version " + pendingVersion + " is not newer than current " + config.currentVersion);
         }
     }
 }
@@ -331,7 +331,7 @@ bool ESP32OtaMqtt::parseUpdateMessage(const String& message) {
     }
     
     if (command != "update") {
-        Serial.println("[OTA] Ignoring non-update command: " + command);
+        OTA_LOG("Ignoring non-update command: " + command);
         return false;
     }
     
@@ -352,10 +352,10 @@ bool ESP32OtaMqtt::begin() {
     // Set up MQTT callback
     mqttClient->setCallback(staticMqttCallback);
     
-    Serial.println("[OTA] ESP32 OTA MQTT updater initialized");
-    Serial.println("[OTA] Current version: " + config.currentVersion);
-    Serial.println("[OTA] Update topic: " + updateTopic);
-    Serial.println("[OTA] Check interval: " + String(config.checkInterval) + "ms");
+    OTA_LOG("ESP32 OTA MQTT updater initialized");
+    OTA_LOG("Current version: " + config.currentVersion);
+    OTA_LOG("Update topic: " + updateTopic);
+    OTA_LOG("Check interval: " + String(config.checkInterval) + "ms");
     
     return true;
 }
@@ -437,7 +437,7 @@ void ESP32OtaMqtt::forceUpdate(const String& version, const String& url, const S
 
 // Install firmware
 bool ESP32OtaMqtt::installFirmware() {
-    Serial.println("[OTA] Installing firmware...");
+    OTA_LOG("Installing firmware...");
     
     // The firmware is already written by Update.write() in downloadFirmware()
     // Update.end() should have completed the installation
@@ -447,14 +447,14 @@ bool ESP32OtaMqtt::installFirmware() {
         return false;
     }
     
-    Serial.println("[OTA] Installation completed successfully");
+    OTA_LOG("Installation completed successfully");
     return true;
 }
 
 // Verify SHA256 checksum
 bool ESP32OtaMqtt::verifyChecksum(const String& expectedChecksum) {
-    Serial.println("[OTA] Expected checksum: " + expectedChecksum);
-    Serial.println("[OTA] Calculated checksum: " + calculatedChecksum);
+    OTA_LOG("Expected checksum: " + expectedChecksum);
+    OTA_LOG("Calculated checksum: " + calculatedChecksum);
     
     // Convert both checksums to lowercase for comparison
     String expectedLower = expectedChecksum;
@@ -465,9 +465,9 @@ bool ESP32OtaMqtt::verifyChecksum(const String& expectedChecksum) {
     bool isValid = (expectedLower == calculatedLower);
     
     if (isValid) {
-        Serial.println("[OTA] Checksum verification: PASSED");
+        OTA_LOG("Checksum verification: PASSED");
     } else {
-        Serial.println("[OTA] Checksum verification: FAILED");
+        OTA_LOG("Checksum verification: FAILED");
     }
     
     return isValid;
@@ -475,13 +475,13 @@ bool ESP32OtaMqtt::verifyChecksum(const String& expectedChecksum) {
 
 // Perform rollback to previous firmware
 void ESP32OtaMqtt::performRollback() {
-    Serial.println("[OTA] Rollback requested...");
+    OTA_LOG("Rollback requested...");
     updateStatus(OtaStatus::ROLLBACK);
     
     // Simple rollback strategy - just restart and hope for the best
     // In a production implementation, you would use ESP32 partition management
     reportError("Manual rollback required - restart device to previous firmware");
-    Serial.println("[OTA] Restarting device...");
+    OTA_LOG("Restarting device...");
     delay(2000);
     ESP.restart();
 }
@@ -494,12 +494,12 @@ void ESP32OtaMqtt::updateStatus(OtaStatus status, int progress) {
         statusCallback(getStatusString(), progress);
     }
     
-    Serial.println("[OTA] Status: " + getStatusString() + " (" + String(progress) + "%)");
+    OTA_LOG("Status: " + getStatusString() + " (" + String(progress) + "%)");
 }
 
 // Report error and notify callback
 void ESP32OtaMqtt::reportError(const String& error, int errorCode) {
-    Serial.println("[OTA] Error: " + error + " (Code: " + String(errorCode) + ")");
+    OTA_LOG("Error: " + error + " (Code: " + String(errorCode) + ")");
     
     if (errorCallback) {
         errorCallback(error, errorCode);
