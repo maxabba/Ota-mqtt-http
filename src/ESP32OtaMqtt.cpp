@@ -1,19 +1,21 @@
 #include "ESP32OtaMqtt.h"
 
-// Constructor - creates own MQTT client (espMqttClientSecure handles WiFiClientSecure internally)
+// Constructor - creates own WiFiClientSecure and MQTT client
 ESP32OtaMqtt::ESP32OtaMqtt(const String& topic)
-    : updateTopic(topic), ownsMqttClient(true),
+    : updateTopic(topic), ownsMqttClient(true), ownsWifiClient(true),
       currentStatus(OtaStatus::IDLE), lastCheck(0), retryCount(0),
       statusCallback(nullptr), errorCallback(nullptr), useInsecure(false),
       mqttConnected(false), mqttPort(8883) {
 
-    mqttClient = new espMqttClientSecure();
+    wifiClient = new WiFiClientSecure();
+    mqttClient = new espMqttClient(*wifiClient);
     setupMqttCallbacks();
 }
 
-// Constructor - uses existing MQTT client
-ESP32OtaMqtt::ESP32OtaMqtt(espMqttClientSecure& mqtt, const String& topic)
-    : mqttClient(&mqtt), updateTopic(topic), ownsMqttClient(false),
+// Constructor - uses existing WiFiClientSecure and MQTT client
+ESP32OtaMqtt::ESP32OtaMqtt(WiFiClientSecure& wifi, espMqttClient& mqtt, const String& topic)
+    : wifiClient(&wifi), mqttClient(&mqtt), updateTopic(topic),
+      ownsMqttClient(false), ownsWifiClient(false),
       currentStatus(OtaStatus::IDLE), lastCheck(0), retryCount(0),
       statusCallback(nullptr), errorCallback(nullptr), useInsecure(false),
       mqttConnected(false), mqttPort(8883) {
@@ -52,6 +54,9 @@ ESP32OtaMqtt::~ESP32OtaMqtt() {
     }
     if (ownsMqttClient && mqttClient) {
         delete mqttClient;
+    }
+    if (ownsWifiClient && wifiClient) {
+        delete wifiClient;
     }
 }
 
@@ -104,12 +109,12 @@ void ESP32OtaMqtt::setCACert(const char* caCert) {
     Serial.println("[OTA] Configuring CA certificate...");
     Serial.println("[OTA] Certificate length: " + String(strlen(caCert)));
 
-    // Apply CA certificate to espMqttClientSecure
-    if (mqttClient) {
-        mqttClient->setCACert(caCert);
-        Serial.println("[OTA] CA certificate applied to espMqttClientSecure");
+    // Apply CA certificate to WiFiClientSecure
+    if (wifiClient) {
+        wifiClient->setCACert(caCert);
+        Serial.println("[OTA] CA certificate applied to WiFiClientSecure");
     } else {
-        Serial.println("[OTA] ERROR: mqttClient is NULL, cannot set CA certificate");
+        Serial.println("[OTA] ERROR: wifiClient is NULL, cannot set CA certificate");
     }
     Serial.println("[OTA] CA certificate configured for secure MQTT connection");
 }
@@ -118,10 +123,10 @@ void ESP32OtaMqtt::setClientCert(const char* clientCert, const char* clientKey) 
     this->clientCert = String(clientCert);
     this->clientKey = String(clientKey);
 
-    // Apply client certificate and key to espMqttClientSecure
-    if (mqttClient) {
-        mqttClient->setCertificate(clientCert);
-        mqttClient->setPrivateKey(clientKey);
+    // Apply client certificate and key to WiFiClientSecure
+    if (wifiClient) {
+        wifiClient->setCertificate(clientCert);
+        wifiClient->setPrivateKey(clientKey);
     }
     Serial.println("[OTA] Client certificate and key configured");
 }
@@ -204,8 +209,8 @@ void ESP32OtaMqtt::setClientCertFromFiles(const String& clientCertPath, const St
 void ESP32OtaMqtt::setInsecure(bool insecure) {
     useInsecure = insecure;
 
-    if (insecure && mqttClient) {
-        mqttClient->setInsecure();
+    if (insecure && wifiClient) {
+        wifiClient->setInsecure();
         Serial.println("[OTA] WARNING: Using insecure connection (certificates not verified)");
     } else {
         Serial.println("[OTA] Secure connection enabled");
