@@ -1,7 +1,7 @@
 {
   "name": "ESP32-OTA-MQTT",
   "version": "1.0.0",
-  "description": "Non-blocking OTA firmware update library for ESP32 via MQTT with automatic rollback support",
+  "description": "Optimized non-blocking OTA firmware update library for ESP32 via MQTT with task-based management, chunked downloads, and automatic rollback support",
   "keywords": "ota, mqtt, esp32, firmware, update, non-blocking, rollback, https",
   "repository": {
     "type": "git",

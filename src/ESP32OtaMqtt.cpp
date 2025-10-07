@@ -3,29 +3,56 @@
 // Static instance for callback
 ESP32OtaMqtt* ESP32OtaMqtt::instance = nullptr;
 
-// Constructor with existing WiFi only
-ESP32OtaMqtt::ESP32OtaMqtt(WiFiClientSecure& wifi, const String& topic) 
-    : wifiClient(&wifi), updateTopic(topic), ownsMqttClient(true),
+// Simple constructor - creates own WiFiClientSecure and PubSubClient
+ESP32OtaMqtt::ESP32OtaMqtt(const String& topic)
+    : updateTopic(topic), ownsMqttClient(true), ownsWifiClient(true),
       currentStatus(OtaStatus::IDLE), lastCheck(0), retryCount(0),
-      statusCallback(nullptr), errorCallback(nullptr), useInsecure(false) {
-    
+      statusCallback(nullptr), errorCallback(nullptr), useInsecure(false),
+      mqttState(MqttConnState::DISCONNECTED), mqttConnectStartTime(0), lastMqttAttempt(0),
+      downloadState(DownloadState::IDLE), downloadClient(nullptr), downloadStartTime(0),
+      lastYield(0), totalBytes(0), downloadedBytes(0), sha256Initialized(false),
+      mqttPort(8883) {
+
+    wifiClient = new WiFiClientSecure();
+    mqttClient = new PubSubClient(*wifiClient);
+    instance = this;
+}
+
+// Constructor with existing WiFi only
+ESP32OtaMqtt::ESP32OtaMqtt(WiFiClientSecure& wifi, const String& topic)
+    : wifiClient(&wifi), updateTopic(topic), ownsMqttClient(true), ownsWifiClient(false),
+      currentStatus(OtaStatus::IDLE), lastCheck(0), retryCount(0),
+      statusCallback(nullptr), errorCallback(nullptr), useInsecure(false),
+      mqttState(MqttConnState::DISCONNECTED), mqttConnectStartTime(0), lastMqttAttempt(0),
+      downloadState(DownloadState::IDLE), downloadClient(nullptr), downloadStartTime(0),
+      lastYield(0), totalBytes(0), downloadedBytes(0), sha256Initialized(false),
+      mqttPort(8883) {
+
     mqttClient = new PubSubClient(*wifiClient);
     instance = this;
 }
 
 // Constructor with existing WiFi and MQTT
 ESP32OtaMqtt::ESP32OtaMqtt(WiFiClientSecure& wifi, PubSubClient& mqtt, const String& topic)
-    : wifiClient(&wifi), mqttClient(&mqtt), updateTopic(topic), ownsMqttClient(false),
+    : wifiClient(&wifi), mqttClient(&mqtt), updateTopic(topic), ownsMqttClient(false), ownsWifiClient(false),
       currentStatus(OtaStatus::IDLE), lastCheck(0), retryCount(0),
-      statusCallback(nullptr), errorCallback(nullptr), useInsecure(false) {
-    
+      statusCallback(nullptr), errorCallback(nullptr), useInsecure(false),
+      mqttState(MqttConnState::DISCONNECTED), mqttConnectStartTime(0), lastMqttAttempt(0),
+      downloadState(DownloadState::IDLE), downloadClient(nullptr), downloadStartTime(0),
+      lastYield(0), totalBytes(0), downloadedBytes(0), sha256Initialized(false),
+      mqttPort(8883) {
+
     instance = this;
 }
 
 // Destructor
 ESP32OtaMqtt::~ESP32OtaMqtt() {
+    cleanupDownload();
     if (ownsMqttClient && mqttClient) {
         delete mqttClient;
+    }
+    if (ownsWifiClient && wifiClient) {
+        delete wifiClient;
     }
     if (instance == this) {
         instance = nullptr;
@@ -58,10 +85,17 @@ void ESP32OtaMqtt::setCurrentVersion(const String& version) {
 }
 
 // MQTT configuration methods
+void ESP32OtaMqtt::setMqttServer(const char* server, int port) {
+    mqttServer = String(server);
+    mqttPort = port;
+    mqttClient->setServer(server, port);
+    OTA_LOG("MQTT server configured: " + mqttServer + ":" + String(mqttPort));
+}
+
 void ESP32OtaMqtt::setMqttCredentials(const String& user, const String& password) {
     mqttUser = user;
     mqttPassword = password;
-    Serial.println("[OTA] MQTT credentials configured for user: " + user);
+    OTA_LOG("MQTT credentials configured for user: " + user);
 }
 
 // SSL/TLS configuration methods
@@ -71,7 +105,7 @@ void ESP32OtaMqtt::setCACert(const char* caCert) {
     
     // Apply CA certificate to WiFiClientSecure using stored string
     wifiClient->setCACert(this->caCert.c_str());
-    Serial.println("[OTA] CA certificate configured for secure MQTT connection");
+    OTA_LOG("CA certificate configured for secure MQTT connection");
 }
 
 void ESP32OtaMqtt::setClientCert(const char* clientCert, const char* clientKey) {
@@ -81,7 +115,7 @@ void ESP32OtaMqtt::setClientCert(const char* clientCert, const char* clientKey) 
     // Apply client certificate and key
     wifiClient->setCertificate(clientCert);
     wifiClient->setPrivateKey(clientKey);
-    Serial.println("[OTA] Client certificate and key configured");
+    OTA_LOG("Client certificate and key configured");
 }
 
 void ESP32OtaMqtt::setCACertFromFile(const String& caCertPath) {
@@ -105,9 +139,9 @@ void ESP32OtaMqtt::setCACertFromFile(const String& caCertPath) {
     }
     
     // Debug: Print certificate info
-    Serial.println("[OTA] Certificate file size: " + String(cert.length()) + " bytes");
-    Serial.println("[OTA] Certificate starts with: " + cert.substring(0, min(50, (int)cert.length())));
-    Serial.println("[OTA] Certificate ends with: " + cert.substring(max(0, (int)cert.length()-50)));
+    OTA_LOG("Certificate file size: " + String(cert.length()) + " bytes");
+    OTA_LOG("Certificate starts with: " + cert.substring(0, min(50, (int)cert.length())));
+    OTA_LOG("Certificate ends with: " + cert.substring(max(0, (int)cert.length()-50)));
     
     // Validate certificate format
     if (!cert.startsWith("-----BEGIN CERTIFICATE-----")) {
@@ -121,7 +155,7 @@ void ESP32OtaMqtt::setCACertFromFile(const String& caCertPath) {
     }
     
     setCACert(cert.c_str());
-    Serial.println("[OTA] CA certificate loaded from SPIFFS: " + caCertPath);
+    OTA_LOG("CA certificate loaded from SPIFFS: " + caCertPath);
 }
 
 void ESP32OtaMqtt::setClientCertFromFiles(const String& clientCertPath, const String& clientKeyPath) {
@@ -156,7 +190,7 @@ void ESP32OtaMqtt::setClientCertFromFiles(const String& clientCertPath, const St
     }
     
     setClientCert(cert.c_str(), key.c_str());
-    Serial.println("[OTA] Client certificate and key loaded from SPIFFS");
+    OTA_LOG("Client certificate and key loaded from SPIFFS");
 }
 
 void ESP32OtaMqtt::setInsecure(bool insecure) {
@@ -164,9 +198,9 @@ void ESP32OtaMqtt::setInsecure(bool insecure) {
     
     if (insecure) {
         wifiClient->setInsecure();
-        Serial.println("[OTA] WARNING: Using insecure connection (certificates not verified)");
+        OTA_LOG("WARNING: Using insecure connection (certificates not verified)");
     } else {
-        Serial.println("[OTA] Secure connection enabled");
+        OTA_LOG("Secure connection enabled");
     }
 }
 
@@ -248,18 +282,18 @@ void ESP32OtaMqtt::mqttCallback(char* topic, byte* payload, unsigned int length)
         message += (char)payload[i];
     }
     
-    Serial.println("[OTA] Received update message: " + message);
+    OTA_LOG("Received update message: " + message);
     
     if (parseUpdateMessage(message)) {
         // Check if this is a newer version
         if (isNewerVersion(pendingVersion, config.currentVersion)) {
-            Serial.println("[OTA] New version available: " + pendingVersion);
+            OTA_LOG("New version available: " + pendingVersion);
             updateStatus(OtaStatus::DOWNLOADING);
             
             // Start download in next loop iteration to avoid blocking MQTT
             // The actual download will be handled in loop()
         } else {
-            Serial.println("[OTA] Version " + pendingVersion + " is not newer than current " + config.currentVersion);
+            OTA_LOG("Version " + pendingVersion + " is not newer than current " + config.currentVersion);
         }
     }
 }
@@ -297,7 +331,7 @@ bool ESP32OtaMqtt::parseUpdateMessage(const String& message) {
     }
     
     if (command != "update") {
-        Serial.println("[OTA] Ignoring non-update command: " + command);
+        OTA_LOG("Ignoring non-update command: " + command);
         return false;
     }
     
@@ -318,77 +352,60 @@ bool ESP32OtaMqtt::begin() {
     // Set up MQTT callback
     mqttClient->setCallback(staticMqttCallback);
     
-    Serial.println("[OTA] ESP32 OTA MQTT updater initialized");
-    Serial.println("[OTA] Current version: " + config.currentVersion);
-    Serial.println("[OTA] Update topic: " + updateTopic);
-    Serial.println("[OTA] Check interval: " + String(config.checkInterval) + "ms");
+    OTA_LOG("ESP32 OTA MQTT updater initialized");
+    OTA_LOG("Current version: " + config.currentVersion);
+    OTA_LOG("Update topic: " + updateTopic);
+    OTA_LOG("Check interval: " + String(config.checkInterval) + "ms");
     
     return true;
 }
 
-// Non-blocking main loop
+// Non-blocking main loop with task-based management
 void ESP32OtaMqtt::loop() {
     if (!WiFi.isConnected()) return;
-    
-    // Handle MQTT connection
-    if (!mqttClient->connected()) {
-        // Try to reconnect (non-blocking)
-        static unsigned long lastReconnectAttempt = 0;
-        if (millis() - lastReconnectAttempt > 5000) {
-            lastReconnectAttempt = millis();
-            Serial.println("[OTA] Attempting MQTT connection...");
-            String clientId = "OTA_" + WiFi.macAddress();
-            bool connected = false;
-            
-            if (mqttUser.length() > 0 && mqttPassword.length() > 0) {
-                connected = mqttClient->connect(clientId.c_str(), mqttUser.c_str(), mqttPassword.c_str());
-            } else {
-                connected = mqttClient->connect(clientId.c_str());
-            }
-            
-            if (connected) {
-                Serial.println("[OTA] MQTT connected, subscribing to: " + updateTopic);
-                mqttClient->subscribe(updateTopic.c_str());
-            } else {
-                Serial.println("[OTA] MQTT connection failed, state: " + String(mqttClient->state()));
-            }
-        }
-    } else {
-        mqttClient->loop();
-    }
-    
-    // Periodic update check
+
+    // Task 1: Handle MQTT connection (non-blocking state machine)
+    handleMqttConnection();
+
+    // Task 2: Periodic update check
     if (millis() - lastCheck >= config.checkInterval) {
         lastCheck = millis();
         checkForUpdates();
     }
-    
-    // Handle pending download
-    if (currentStatus == OtaStatus::DOWNLOADING && !pendingUrl.isEmpty()) {
-        if (downloadFirmware(pendingUrl, pendingChecksum)) {
-            updateStatus(OtaStatus::INSTALLING);
-            if (installFirmware()) {
-                updateStatus(OtaStatus::SUCCESS);
-                config.currentVersion = pendingVersion;
+
+    // Task 3: Handle download (chunked, non-blocking)
+    if (currentStatus == OtaStatus::DOWNLOADING) {
+        if (downloadState == DownloadState::IDLE && !pendingUrl.isEmpty()) {
+            // Start new download
+            if (startDownload(pendingUrl)) {
+                downloadState = DownloadState::DOWNLOADING;
             } else {
-                updateStatus(OtaStatus::ERROR);
-                if (config.enableRollback) {
-                    performRollback();
+                // Failed to start
+                retryCount++;
+                if (retryCount >= config.maxRetries) {
+                    updateStatus(OtaStatus::ERROR);
+                    retryCount = 0;
+                    pendingUrl = "";
+                    pendingChecksum = "";
+                    pendingVersion = "";
                 }
             }
-        } else {
-            retryCount++;
-            if (retryCount >= config.maxRetries) {
-                updateStatus(OtaStatus::ERROR);
-                retryCount = 0;
+        } else if (downloadState != DownloadState::IDLE) {
+            // Continue download
+            handleDownload();
+
+            // Check if download finished (success or failure)
+            if (downloadState == DownloadState::IDLE) {
+                // Clear pending data after completion
+                pendingUrl = "";
+                pendingChecksum = "";
+                pendingVersion = "";
             }
         }
-        
-        // Clear pending data
-        pendingUrl = "";
-        pendingChecksum = "";
-        pendingVersion = "";
     }
+
+    // Yield to prevent watchdog timeout
+    yieldIfNeeded();
 }
 
 // Check for updates (called periodically)
@@ -417,309 +434,10 @@ void ESP32OtaMqtt::forceUpdate(const String& version, const String& url, const S
 }
 
 // Download firmware with progress tracking
-bool ESP32OtaMqtt::downloadFirmware(const String& url, const String& expectedChecksum) {
-    Serial.println("[OTA] Starting download from: " + url);
-    
-    // Prepare for OTA
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-        reportError("Cannot begin update", Update.getError());
-        return false;
-    }
-    
-    // Initialize SHA256 context for checksum calculation
-    mbedtls_sha256_context sha256_ctx;
-    mbedtls_sha256_init(&sha256_ctx);
-    mbedtls_sha256_starts(&sha256_ctx, 0); // 0 = SHA256 (not SHA224)
-    
-    // Check if URL is HTTP or HTTPS
-    bool isHTTPS = url.startsWith("https://");
-    bool isHTTP = url.startsWith("http://");
-    
-    if (!isHTTP && !isHTTPS) {
-        reportError("Invalid URL protocol. Must be HTTP or HTTPS");
-        mbedtls_sha256_free(&sha256_ctx);
-        Update.abort();
-        return false;
-    }
-    
-    // Parse URL and extract host, path, and port
-    String host = "";
-    String path = "";
-    int port = isHTTPS ? 443 : 80;
-    
-    // Parse URL (simple parser for http(s)://host:port/path)
-    int protocolEnd = url.indexOf("://");
-    if (protocolEnd != -1) {
-        int hostStart = protocolEnd + 3;
-        int portStart = url.indexOf(':', hostStart);
-        int pathStart = url.indexOf('/', hostStart);
-        
-        if (portStart != -1 && (pathStart == -1 || portStart < pathStart)) {
-            // Port specified
-            host = url.substring(hostStart, portStart);
-            if (pathStart != -1) {
-                port = url.substring(portStart + 1, pathStart).toInt();
-                path = url.substring(pathStart);
-            } else {
-                port = url.substring(portStart + 1).toInt();
-                path = "/";
-            }
-        } else if (pathStart != -1) {
-            // No port, but path exists
-            host = url.substring(hostStart, pathStart);
-            path = url.substring(pathStart);
-        } else {
-            // No port, no path
-            host = url.substring(hostStart);
-            path = "/";
-        }
-    }
-    
-    Serial.println("[OTA] Protocol: " + String(isHTTPS ? "HTTPS" : "HTTP"));
-    Serial.println("[OTA] Host: " + host);
-    Serial.println("[OTA] Port: " + String(port));
-    Serial.println("[OTA] Path: " + path);
-    
-    size_t written = 0;
-    
-    // For HTTP, we need to use a regular WiFiClient
-    if (isHTTP) {
-        Serial.println("[OTA] Using plain HTTP connection");
-        WiFiClient httpClient;
-        
-        if (!httpClient.connect(host.c_str(), port)) {
-            reportError("Connection to HTTP server failed");
-            mbedtls_sha256_free(&sha256_ctx);
-            Update.abort();
-            return false;
-        }
-        
-        // Send HTTP request
-        httpClient.println("GET " + path + " HTTP/1.1");
-        httpClient.println("Host: " + host);
-        httpClient.println("Connection: close");
-        httpClient.println();
-        
-        // Read response headers
-        unsigned long timeout = millis() + config.downloadTimeout;
-        int contentLength = 0;
-        bool isChunked = false;
-        
-        while (httpClient.connected() && millis() < timeout) {
-            String line = httpClient.readStringUntil('\n');
-            line.trim();
-            
-            // Check for Content-Length header
-            if (line.startsWith("Content-Length:")) {
-                contentLength = line.substring(15).toInt();
-                Serial.println("[OTA] Content-Length: " + String(contentLength));
-            }
-            // Check for chunked encoding
-            else if (line.indexOf("Transfer-Encoding: chunked") >= 0) {
-                isChunked = true;
-                Serial.println("[OTA] Transfer-Encoding: chunked");
-            }
-            // End of headers
-            else if (line.length() == 0) {
-                break;
-            }
-        }
-        
-        // Download and write firmware
-        unsigned long lastProgress = 0;
-        uint8_t buffer[1024];
-        
-        while (httpClient.connected() && millis() < timeout) {
-            size_t available = httpClient.available();
-            if (available) {
-                size_t bytesToRead = (available > sizeof(buffer)) ? sizeof(buffer) : available;
-                size_t bytesRead = httpClient.readBytes(buffer, bytesToRead);
-                
-                if (bytesRead > 0) {
-                    // Update SHA256 hash with downloaded data
-                    mbedtls_sha256_update(&sha256_ctx, buffer, bytesRead);
-                    
-                    if (Update.write(buffer, bytesRead) != bytesRead) {
-                        reportError("Write failed", Update.getError());
-                        Update.abort();
-                        httpClient.stop();
-                        mbedtls_sha256_free(&sha256_ctx);
-                        return false;
-                    }
-                    
-                    written += bytesRead;
-                    
-                    // Update progress
-                    if (contentLength > 0) {
-                        int progress = (written * 100) / contentLength;
-                        if (progress != lastProgress) {
-                            updateStatus(OtaStatus::DOWNLOADING, progress);
-                            lastProgress = progress;
-                        }
-                    } else if (written - lastProgress >= 10240) {
-                        // Update every 10KB when content length unknown
-                        Serial.print(".");
-                        lastProgress = written;
-                    }
-                }
-            }
-            
-            // Check if download is complete
-            if (contentLength > 0 && written >= contentLength) {
-                break;
-            }
-            
-            yield(); // Keep watchdog happy
-        }
-        
-        httpClient.stop();
-        Serial.println();
-        Serial.println("[OTA] Downloaded " + String(written) + " bytes via HTTP");
-        
-        // Handle case where download failed but we need to cleanup
-        if (written == 0) {
-            mbedtls_sha256_free(&sha256_ctx);
-            Update.abort();
-        }
-        
-    } else {
-        // HTTPS with dedicated WiFiClientSecure for download
-        Serial.println("[OTA] Using HTTPS connection");
-        
-        // Create dedicated client for firmware download to avoid conflicts with MQTT client
-        WiFiClientSecure downloadClient;
-        downloadClient.setInsecure();
-        Serial.println("[OTA] Using dedicated insecure HTTPS client for firmware download");
-        
-        if (!downloadClient.connect(host.c_str(), port)) {
-            reportError("Connection to HTTPS server failed");
-            mbedtls_sha256_free(&sha256_ctx);
-            Update.abort();
-            return false;
-        }
-        
-        // Send HTTP request
-        downloadClient.println("GET " + path + " HTTP/1.1");
-        downloadClient.println("Host: " + host);
-        downloadClient.println("Connection: close");
-        downloadClient.println();
-    
-        // Read response headers
-        unsigned long timeout = millis() + config.downloadTimeout;
-        int contentLength = 0;
-        
-        while (downloadClient.connected() && millis() < timeout) {
-            String line = downloadClient.readStringUntil('\n');
-            line.trim();
-            
-            // Check for Content-Length header
-            if (line.startsWith("Content-Length:")) {
-                contentLength = line.substring(15).toInt();
-                Serial.println("[OTA] Content-Length: " + String(contentLength));
-            }
-            // End of headers
-            else if (line.length() == 0) {
-                break;
-            }
-        }
-        
-        // Download and write firmware
-        unsigned long lastProgress = 0;
-        uint8_t buffer[1024];
-        
-        while (downloadClient.connected() && millis() < timeout) {
-            size_t available = downloadClient.available();
-            if (available) {
-                size_t bytesToRead = (available > sizeof(buffer)) ? sizeof(buffer) : available;
-                size_t bytesRead = downloadClient.readBytes(buffer, bytesToRead);
-                
-                if (bytesRead > 0) {
-                    // Update SHA256 hash with downloaded data
-                    mbedtls_sha256_update(&sha256_ctx, buffer, bytesRead);
-                    
-                    if (Update.write(buffer, bytesRead) != bytesRead) {
-                        reportError("Write failed", Update.getError());
-                        Update.abort();
-                        downloadClient.stop();
-                        mbedtls_sha256_free(&sha256_ctx);
-                        return false;
-                    }
-                    
-                    written += bytesRead;
-                    
-                    // Update progress
-                    if (contentLength > 0) {
-                        int progress = (written * 100) / contentLength;
-                        if (progress != lastProgress) {
-                            updateStatus(OtaStatus::DOWNLOADING, progress);
-                            lastProgress = progress;
-                        }
-                    } else if (written - lastProgress >= 10240) {
-                        // Update every 10KB when content length unknown
-                        Serial.print(".");
-                        lastProgress = written;
-                    }
-                }
-            }
-            
-            // Check if download is complete
-            if (contentLength > 0 && written >= contentLength) {
-                break;
-            }
-            
-            yield(); // Keep watchdog happy
-        }
-        
-        downloadClient.stop();
-        Serial.println();
-        Serial.println("[OTA] Downloaded " + String(written) + " bytes via HTTPS");
-        
-        // Handle case where download failed but we need to cleanup
-        if (written == 0) {
-            mbedtls_sha256_free(&sha256_ctx);
-            Update.abort();
-        }
-    }
-    
-    // Finalize SHA256 calculation
-    unsigned char hash[32];
-    mbedtls_sha256_finish(&sha256_ctx, hash);
-    mbedtls_sha256_free(&sha256_ctx);
-    
-    // Convert hash to hex string
-    calculatedChecksum = "";
-    for (int i = 0; i < 32; i++) {
-        char hex[3];
-        sprintf(hex, "%02x", hash[i]);
-        calculatedChecksum += hex;
-    }
-    
-    // Finalize the update
-    if (written == 0) {
-        reportError("No data received from server");
-        Update.abort();
-        return false;
-    }
-    
-    if (!Update.end(true)) {
-        reportError("Update end failed", Update.getError());
-        return false;
-    }
-    
-    // Verify checksum if enabled
-    if (config.verifyChecksum && !verifyChecksum(expectedChecksum)) {
-        reportError("Checksum verification failed");
-        Update.abort();  // Critical: abort the corrupted firmware
-        return false;
-    }
-    
-    Serial.println("[OTA] Firmware update ready to install");
-    return true;
-}
 
 // Install firmware
 bool ESP32OtaMqtt::installFirmware() {
-    Serial.println("[OTA] Installing firmware...");
+    OTA_LOG("Installing firmware...");
     
     // The firmware is already written by Update.write() in downloadFirmware()
     // Update.end() should have completed the installation
@@ -729,14 +447,14 @@ bool ESP32OtaMqtt::installFirmware() {
         return false;
     }
     
-    Serial.println("[OTA] Installation completed successfully");
+    OTA_LOG("Installation completed successfully");
     return true;
 }
 
 // Verify SHA256 checksum
 bool ESP32OtaMqtt::verifyChecksum(const String& expectedChecksum) {
-    Serial.println("[OTA] Expected checksum: " + expectedChecksum);
-    Serial.println("[OTA] Calculated checksum: " + calculatedChecksum);
+    OTA_LOG("Expected checksum: " + expectedChecksum);
+    OTA_LOG("Calculated checksum: " + calculatedChecksum);
     
     // Convert both checksums to lowercase for comparison
     String expectedLower = expectedChecksum;
@@ -747,9 +465,9 @@ bool ESP32OtaMqtt::verifyChecksum(const String& expectedChecksum) {
     bool isValid = (expectedLower == calculatedLower);
     
     if (isValid) {
-        Serial.println("[OTA] Checksum verification: PASSED");
+        OTA_LOG("Checksum verification: PASSED");
     } else {
-        Serial.println("[OTA] Checksum verification: FAILED");
+        OTA_LOG("Checksum verification: FAILED");
     }
     
     return isValid;
@@ -757,13 +475,13 @@ bool ESP32OtaMqtt::verifyChecksum(const String& expectedChecksum) {
 
 // Perform rollback to previous firmware
 void ESP32OtaMqtt::performRollback() {
-    Serial.println("[OTA] Rollback requested...");
+    OTA_LOG("Rollback requested...");
     updateStatus(OtaStatus::ROLLBACK);
     
     // Simple rollback strategy - just restart and hope for the best
     // In a production implementation, you would use ESP32 partition management
     reportError("Manual rollback required - restart device to previous firmware");
-    Serial.println("[OTA] Restarting device...");
+    OTA_LOG("Restarting device...");
     delay(2000);
     ESP.restart();
 }
@@ -776,12 +494,12 @@ void ESP32OtaMqtt::updateStatus(OtaStatus status, int progress) {
         statusCallback(getStatusString(), progress);
     }
     
-    Serial.println("[OTA] Status: " + getStatusString() + " (" + String(progress) + "%)");
+    OTA_LOG("Status: " + getStatusString() + " (" + String(progress) + "%)");
 }
 
 // Report error and notify callback
 void ESP32OtaMqtt::reportError(const String& error, int errorCode) {
-    Serial.println("[OTA] Error: " + error + " (Code: " + String(errorCode) + ")");
+    OTA_LOG("Error: " + error + " (Code: " + String(errorCode) + ")");
     
     if (errorCallback) {
         errorCallback(error, errorCode);
