@@ -4,11 +4,14 @@
 ESP32OtaMqtt* ESP32OtaMqtt::instance = nullptr;
 
 // Constructor with existing WiFi only
-ESP32OtaMqtt::ESP32OtaMqtt(WiFiClientSecure& wifi, const String& topic) 
+ESP32OtaMqtt::ESP32OtaMqtt(WiFiClientSecure& wifi, const String& topic)
     : wifiClient(&wifi), updateTopic(topic), ownsMqttClient(true),
       currentStatus(OtaStatus::IDLE), lastCheck(0), retryCount(0),
-      statusCallback(nullptr), errorCallback(nullptr), useInsecure(false) {
-    
+      statusCallback(nullptr), errorCallback(nullptr), useInsecure(false),
+      mqttState(MqttConnState::DISCONNECTED), mqttConnectStartTime(0), lastMqttAttempt(0),
+      downloadState(DownloadState::IDLE), downloadClient(nullptr), downloadStartTime(0),
+      lastYield(0), totalBytes(0), downloadedBytes(0), sha256Initialized(false) {
+
     mqttClient = new PubSubClient(*wifiClient);
     instance = this;
 }
@@ -17,13 +20,17 @@ ESP32OtaMqtt::ESP32OtaMqtt(WiFiClientSecure& wifi, const String& topic)
 ESP32OtaMqtt::ESP32OtaMqtt(WiFiClientSecure& wifi, PubSubClient& mqtt, const String& topic)
     : wifiClient(&wifi), mqttClient(&mqtt), updateTopic(topic), ownsMqttClient(false),
       currentStatus(OtaStatus::IDLE), lastCheck(0), retryCount(0),
-      statusCallback(nullptr), errorCallback(nullptr), useInsecure(false) {
-    
+      statusCallback(nullptr), errorCallback(nullptr), useInsecure(false),
+      mqttState(MqttConnState::DISCONNECTED), mqttConnectStartTime(0), lastMqttAttempt(0),
+      downloadState(DownloadState::IDLE), downloadClient(nullptr), downloadStartTime(0),
+      lastYield(0), totalBytes(0), downloadedBytes(0), sha256Initialized(false) {
+
     instance = this;
 }
 
 // Destructor
 ESP32OtaMqtt::~ESP32OtaMqtt() {
+    cleanupDownload();
     if (ownsMqttClient && mqttClient) {
         delete mqttClient;
     }
@@ -326,69 +333,52 @@ bool ESP32OtaMqtt::begin() {
     return true;
 }
 
-// Non-blocking main loop
+// Non-blocking main loop with task-based management
 void ESP32OtaMqtt::loop() {
     if (!WiFi.isConnected()) return;
-    
-    // Handle MQTT connection
-    if (!mqttClient->connected()) {
-        // Try to reconnect (non-blocking)
-        static unsigned long lastReconnectAttempt = 0;
-        if (millis() - lastReconnectAttempt > 5000) {
-            lastReconnectAttempt = millis();
-            Serial.println("[OTA] Attempting MQTT connection...");
-            String clientId = "OTA_" + WiFi.macAddress();
-            bool connected = false;
-            
-            if (mqttUser.length() > 0 && mqttPassword.length() > 0) {
-                connected = mqttClient->connect(clientId.c_str(), mqttUser.c_str(), mqttPassword.c_str());
-            } else {
-                connected = mqttClient->connect(clientId.c_str());
-            }
-            
-            if (connected) {
-                Serial.println("[OTA] MQTT connected, subscribing to: " + updateTopic);
-                mqttClient->subscribe(updateTopic.c_str());
-            } else {
-                Serial.println("[OTA] MQTT connection failed, state: " + String(mqttClient->state()));
-            }
-        }
-    } else {
-        mqttClient->loop();
-    }
-    
-    // Periodic update check
+
+    // Task 1: Handle MQTT connection (non-blocking state machine)
+    handleMqttConnection();
+
+    // Task 2: Periodic update check
     if (millis() - lastCheck >= config.checkInterval) {
         lastCheck = millis();
         checkForUpdates();
     }
-    
-    // Handle pending download
-    if (currentStatus == OtaStatus::DOWNLOADING && !pendingUrl.isEmpty()) {
-        if (downloadFirmware(pendingUrl, pendingChecksum)) {
-            updateStatus(OtaStatus::INSTALLING);
-            if (installFirmware()) {
-                updateStatus(OtaStatus::SUCCESS);
-                config.currentVersion = pendingVersion;
+
+    // Task 3: Handle download (chunked, non-blocking)
+    if (currentStatus == OtaStatus::DOWNLOADING) {
+        if (downloadState == DownloadState::IDLE && !pendingUrl.isEmpty()) {
+            // Start new download
+            if (startDownload(pendingUrl)) {
+                downloadState = DownloadState::DOWNLOADING;
             } else {
-                updateStatus(OtaStatus::ERROR);
-                if (config.enableRollback) {
-                    performRollback();
+                // Failed to start
+                retryCount++;
+                if (retryCount >= config.maxRetries) {
+                    updateStatus(OtaStatus::ERROR);
+                    retryCount = 0;
+                    pendingUrl = "";
+                    pendingChecksum = "";
+                    pendingVersion = "";
                 }
             }
-        } else {
-            retryCount++;
-            if (retryCount >= config.maxRetries) {
-                updateStatus(OtaStatus::ERROR);
-                retryCount = 0;
+        } else if (downloadState != DownloadState::IDLE) {
+            // Continue download
+            handleDownload();
+
+            // Check if download finished (success or failure)
+            if (downloadState == DownloadState::IDLE) {
+                // Clear pending data after completion
+                pendingUrl = "";
+                pendingChecksum = "";
+                pendingVersion = "";
             }
         }
-        
-        // Clear pending data
-        pendingUrl = "";
-        pendingChecksum = "";
-        pendingVersion = "";
     }
+
+    // Yield to prevent watchdog timeout
+    yieldIfNeeded();
 }
 
 // Check for updates (called periodically)
