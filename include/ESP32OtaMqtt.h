@@ -61,10 +61,13 @@ private:
     WiFiClientSecure* wifiClient;
     PubSubClient* mqttClient;
     bool ownsMqttClient;
+    bool ownsWifiClient;
     
     // Configuration
     String updateTopic;
     OtaConfig config;
+    String mqttServer;
+    int mqttPort;
     String mqttUser;
     String mqttPassword;
     
@@ -133,6 +136,7 @@ private:
     
 public:
     // Constructors
+    ESP32OtaMqtt(const String& topic);  // Simple constructor, creates own clients
     ESP32OtaMqtt(WiFiClientSecure& wifi, const String& topic);
     ESP32OtaMqtt(WiFiClientSecure& wifi, PubSubClient& mqtt, const String& topic);
     
@@ -148,6 +152,7 @@ public:
     void setCurrentVersion(const String& version);
     
     // MQTT configuration methods
+    void setMqttServer(const char* server, int port = 8883);
     void setMqttCredentials(const String& user, const String& password);
     
     // SSL/TLS configuration methods
