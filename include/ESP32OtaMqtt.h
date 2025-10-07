@@ -5,7 +5,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <Update.h>
-#include <PsychicMqttClient.h>
+#include <espMqttClient.h>
 #include <SPIFFS.h>
 #include <mbedtls/sha256.h>
 
@@ -37,8 +37,10 @@ struct OtaConfig {
 class ESP32OtaMqtt {
 private:
     // Core components
-    PsychicMqttClient* mqttClient;
+    WiFiClientSecure* wifiClient;
+    espMqttClient* mqttClient;
     bool ownsMqttClient;
+    bool ownsWifiClient;
     
     // Configuration
     String updateTopic;
@@ -89,7 +91,7 @@ private:
 public:
     // Constructors
     ESP32OtaMqtt(const String& topic);
-    ESP32OtaMqtt(PsychicMqttClient& mqtt, const String& topic);
+    ESP32OtaMqtt(WiFiClientSecure& wifi, espMqttClient& mqtt, const String& topic);
     
     // Destructor
     ~ESP32OtaMqtt();

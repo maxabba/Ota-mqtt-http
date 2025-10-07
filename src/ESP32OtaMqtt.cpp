@@ -1,19 +1,22 @@
 #include "ESP32OtaMqtt.h"
 
-// Constructor - creates own MQTT client
+// Constructor - creates own WiFiClientSecure and MQTT client
 ESP32OtaMqtt::ESP32OtaMqtt(const String& topic)
-    : updateTopic(topic), ownsMqttClient(true),
+    : updateTopic(topic), ownsMqttClient(true), ownsWifiClient(true),
       currentStatus(OtaStatus::IDLE), lastCheck(0), retryCount(0),
       statusCallback(nullptr), errorCallback(nullptr), useInsecure(false),
       mqttConnected(false), mqttPort(8883) {
 
-    mqttClient = new PsychicMqttClient();
+    wifiClient = new WiFiClientSecure();
+    mqttClient = new espMqttClient();
+    mqttClient->setClient(*wifiClient);
     setupMqttCallbacks();
 }
 
-// Constructor - uses existing MQTT client
-ESP32OtaMqtt::ESP32OtaMqtt(PsychicMqttClient& mqtt, const String& topic)
-    : mqttClient(&mqtt), updateTopic(topic), ownsMqttClient(false),
+// Constructor - uses existing WiFiClientSecure and MQTT client
+ESP32OtaMqtt::ESP32OtaMqtt(WiFiClientSecure& wifi, espMqttClient& mqtt, const String& topic)
+    : wifiClient(&wifi), mqttClient(&mqtt), updateTopic(topic),
+      ownsMqttClient(false), ownsWifiClient(false),
       currentStatus(OtaStatus::IDLE), lastCheck(0), retryCount(0),
       statusCallback(nullptr), errorCallback(nullptr), useInsecure(false),
       mqttConnected(false), mqttPort(8883) {
@@ -30,14 +33,16 @@ void ESP32OtaMqtt::setupMqttCallbacks() {
         onMqttConnect();
     });
 
-    mqttClient->onDisconnect([this](bool sessionPresent) {
-        Serial.println("[OTA] onDisconnect callback triggered");
+    mqttClient->onDisconnect([this](espMqttClientTypes::DisconnectReason reason) {
+        Serial.println("[OTA] onDisconnect callback triggered (reason: " + String((int)reason) + ")");
         onMqttDisconnect();
     });
 
-    mqttClient->onMessage([this](const char* topic, const char* payload, size_t len, size_t index, size_t total) {
+    mqttClient->onMessage([this](const espMqttClientTypes::MessageProperties& properties,
+                                  const char* topic, const uint8_t* payload,
+                                  size_t len, size_t index, size_t total) {
         Serial.println("[OTA] onMessage callback triggered");
-        onMqttMessage(topic, payload, len, index, total);
+        onMqttMessage(topic, (const char*)payload, len, index, total);
     });
 
     Serial.println("[OTA] MQTT callbacks configured successfully");
@@ -50,6 +55,9 @@ ESP32OtaMqtt::~ESP32OtaMqtt() {
     }
     if (ownsMqttClient && mqttClient) {
         delete mqttClient;
+    }
+    if (ownsWifiClient && wifiClient) {
+        delete wifiClient;
     }
 }
 
@@ -102,12 +110,12 @@ void ESP32OtaMqtt::setCACert(const char* caCert) {
     Serial.println("[OTA] Configuring CA certificate...");
     Serial.println("[OTA] Certificate length: " + String(strlen(caCert)));
 
-    // Apply CA certificate to PsychicMqttClient
-    if (mqttClient) {
-        mqttClient->setCACert(caCert);
-        Serial.println("[OTA] CA certificate applied to PsychicMqttClient");
+    // Apply CA certificate to WiFiClientSecure
+    if (wifiClient) {
+        wifiClient->setCACert(caCert);
+        Serial.println("[OTA] CA certificate applied to WiFiClientSecure");
     } else {
-        Serial.println("[OTA] ERROR: mqttClient is NULL, cannot set CA certificate");
+        Serial.println("[OTA] ERROR: wifiClient is NULL, cannot set CA certificate");
     }
     Serial.println("[OTA] CA certificate configured for secure MQTT connection");
 }
@@ -116,9 +124,10 @@ void ESP32OtaMqtt::setClientCert(const char* clientCert, const char* clientKey) 
     this->clientCert = String(clientCert);
     this->clientKey = String(clientKey);
 
-    // Apply client certificate and key to PsychicMqttClient
-    if (mqttClient) {
-        mqttClient->setClientCertificate(clientCert, clientKey);
+    // Apply client certificate and key to WiFiClientSecure
+    if (wifiClient) {
+        wifiClient->setCertificate(clientCert);
+        wifiClient->setPrivateKey(clientKey);
     }
     Serial.println("[OTA] Client certificate and key configured");
 }
@@ -201,7 +210,8 @@ void ESP32OtaMqtt::setClientCertFromFiles(const String& clientCertPath, const St
 void ESP32OtaMqtt::setInsecure(bool insecure) {
     useInsecure = insecure;
 
-    if (insecure) {
+    if (insecure && wifiClient) {
+        wifiClient->setInsecure();
         Serial.println("[OTA] WARNING: Using insecure connection (certificates not verified)");
     } else {
         Serial.println("[OTA] Secure connection enabled");
@@ -384,15 +394,9 @@ bool ESP32OtaMqtt::begin() {
         return false;
     }
     
-    // Build MQTT URI based on port (PsychicMqttClient uses URIs)
-    String protocol = (mqttPort == 8883 || mqttPort == 8884) ? "mqtts://" : "mqtt://";
-    String uri = protocol + mqttServer + ":" + String(mqttPort);
-
     Serial.println("[OTA] === MQTT Connection Configuration ===");
-    Serial.println("[OTA] Protocol: " + protocol);
     Serial.println("[OTA] Server: " + mqttServer);
     Serial.println("[OTA] Port: " + String(mqttPort));
-    Serial.println("[OTA] Full URI: " + uri);
     Serial.println("[OTA] Username: " + (mqttUser.isEmpty() ? String("None") : mqttUser));
     Serial.println("[OTA] Password: " + (mqttPassword.isEmpty() ? String("None") : String("***")));
     Serial.println("[OTA] CA Cert configured: " + String(!caCert.isEmpty() ? "Yes" : "No"));
@@ -408,10 +412,15 @@ bool ESP32OtaMqtt::begin() {
         }
     }
 
-    // Connect to MQTT (non-blocking)
-    Serial.println("[OTA] Setting MQTT server URI...");
-    mqttClient->setServer(uri.c_str());
+    // Configure MQTT server and credentials
+    Serial.println("[OTA] Configuring MQTT client...");
+    mqttClient->setServer(mqttServer.c_str(), mqttPort);
 
+    if (!mqttUser.isEmpty()) {
+        mqttClient->setCredentials(mqttUser.c_str(), mqttPassword.c_str());
+    }
+
+    // Connect to MQTT (async - connection happens in background)
     Serial.println("[OTA] Initiating MQTT connection...");
     mqttClient->connect();
     Serial.println("[OTA] MQTT connect() called, waiting for callback...");

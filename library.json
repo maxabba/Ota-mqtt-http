@@ -17,7 +17,7 @@
   "license": "MIT",
   "homepage": "https://github.com/maxabba/Ota-mqtt-http",
   "dependencies": {
-    "elims/PsychicMqttClient": "^2.0.4"
+    "bertmelis/espMqttClient": "^1.7.0"
   },
   "frameworks": ["arduino", "espidf"],
   "platforms": ["espressif32"],
